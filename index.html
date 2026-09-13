@@ -1,18 +1,23 @@
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
+
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>اختبار الكاميرا</title>
+    <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+    <title>Face Tracking</title>
 
     <style>
         * {
             box-sizing: border-box;
         }
 
-        html, body {
+        html,
+        body {
             margin: 0;
+            padding: 0;
             width: 100%;
             height: 100%;
             overflow: hidden;
@@ -21,156 +26,899 @@
         }
 
         .app {
-            width: 100%;
-            height: 100%;
             position: relative;
-        }
-
-        video {
             width: 100%;
             height: 100%;
-            object-fit: cover;
-            transform: scaleX(-1);
-            background: #111;
+            overflow: hidden;
+            background: #000;
         }
 
-        .status {
+        /* الكاميرا */
+        #video {
             position: absolute;
-            top: 20px;
+            inset: 0;
+
+            width: 100%;
+            height: 100%;
+
+            object-fit: cover;
+
+            transform: scaleX(-1);
+
+            background: #000;
+        }
+
+        /* طبقة التتبع */
+        #canvas {
+            position: absolute;
+            inset: 0;
+
+            width: 100%;
+            height: 100%;
+
+            pointer-events: none;
+
+            transform: scaleX(-1);
+        }
+
+        /* المعلومات */
+        .panel {
+            position: absolute;
+
+            top: 15px;
             left: 15px;
             right: 15px;
 
-            padding: 15px;
+            padding: 14px;
 
-            background: rgba(0,0,0,.7);
+            background: rgba(0, 0, 0, 0.65);
+
+            border: 1px solid rgba(255, 255, 255, 0.15);
+
+            border-radius: 16px;
+
             color: white;
 
-            border-radius: 15px;
-            text-align: center;
+            z-index: 10;
 
-            z-index: 5;
+            backdrop-filter: blur(10px);
         }
 
-        button {
+        .title {
+            font-size: 18px;
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 8px;
+        }
+
+        #status {
+            text-align: center;
+            font-size: 14px;
+            color: #00ff88;
+            margin-bottom: 10px;
+        }
+
+        .values {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 6px;
+
+            direction: ltr;
+        }
+
+        .value {
+            background: rgba(255, 255, 255, 0.08);
+
+            border-radius: 10px;
+
+            padding: 7px;
+
+            text-align: center;
+
+            font-size: 11px;
+        }
+
+        .value strong {
+            display: block;
+
+            font-size: 17px;
+
+            margin-top: 3px;
+        }
+
+        /* زر التشغيل */
+        #startButton {
             position: absolute;
-            bottom: 30px;
+
             left: 50%;
+            bottom: 35px;
 
             transform: translateX(-50%);
 
-            padding: 15px 30px;
+            padding: 15px 28px;
 
             border: none;
+
             border-radius: 50px;
 
             background: white;
             color: black;
 
-            font-size: 17px;
+            font-size: 16px;
             font-weight: bold;
 
-            z-index: 10;
+            z-index: 20;
         }
 
-        button:active {
-            transform: translateX(-50%) scale(.95);
+        #startButton:active {
+            transform: translateX(-50%) scale(0.95);
+        }
+
+        .hidden {
+            display: none !important;
         }
     </style>
 </head>
+
 
 <body>
 
 <div class="app">
 
+    <!-- الكاميرا -->
     <video
-        id="camera"
+        id="video"
         autoplay
         muted
         playsinline>
     </video>
 
-    <div
-        id="status"
-        class="status">
-        اضغط تشغيل الكاميرا
+
+    <!-- نقاط الوجه -->
+    <canvas id="canvas"></canvas>
+
+
+    <!-- المعلومات -->
+    <div class="panel">
+
+        <div class="title">
+            Face Tracking
+        </div>
+
+        <div id="status">
+            اضغط تشغيل الكاميرا
+        </div>
+
+        <div class="values">
+
+            <div class="value">
+                HEAD X
+                <strong id="xValue">0°</strong>
+            </div>
+
+            <div class="value">
+                HEAD Y
+                <strong id="yValue">0°</strong>
+            </div>
+
+            <div class="value">
+                HEAD Z
+                <strong id="zValue">0°</strong>
+            </div>
+
+        </div>
+
     </div>
 
-    <button id="start">
+
+    <!-- زر التشغيل -->
+    <button id="startButton">
         تشغيل الكاميرا
     </button>
 
 </div>
 
 
-<script>
+<script type="module">
 
-const video = document.getElementById("camera");
-const button = document.getElementById("start");
-const status = document.getElementById("status");
+    /*
+     * ==========================================
+     * MediaPipe Face Landmarker
+     * ==========================================
+     */
+
+    import {
+        FaceLandmarker,
+        FilesetResolver
+    } from
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22";
 
 
-button.addEventListener("click", async () => {
+    /*
+     * ==========================================
+     * العناصر
+     * ==========================================
+     */
 
-    status.textContent = "جاري تشغيل الكاميرا...";
+    const video =
+        document.getElementById("video");
 
-    try {
+    const canvas =
+        document.getElementById("canvas");
 
-        if (!navigator.mediaDevices) {
+    const ctx =
+        canvas.getContext("2d");
 
-            throw new Error(
-                "المتصفح لا يدعم الوصول إلى الكاميرا"
+    const startButton =
+        document.getElementById("startButton");
+
+    const status =
+        document.getElementById("status");
+
+    const xValue =
+        document.getElementById("xValue");
+
+    const yValue =
+        document.getElementById("yValue");
+
+    const zValue =
+        document.getElementById("zValue");
+
+
+    /*
+     * ==========================================
+     * المتغيرات
+     * ==========================================
+     */
+
+    let faceLandmarker = null;
+
+    let lastVideoTime = -1;
+
+    let cameraStarted = false;
+
+
+    /*
+     * ==========================================
+     * إنشاء نظام Face Tracking
+     * ==========================================
+     */
+
+    async function createFaceTracker() {
+
+        status.textContent =
+            "جاري تحميل نظام تتبع الوجه...";
+
+
+        const vision =
+            await FilesetResolver.forVisionTasks(
+
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm"
+
             );
+
+
+        faceLandmarker =
+            await FaceLandmarker.createFromOptions(
+
+                vision,
+
+                {
+
+                    baseOptions: {
+
+                        modelAssetPath:
+                            "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+
+                        delegate: "GPU"
+
+                    },
+
+
+                    runningMode: "VIDEO",
+
+                    numFaces: 1,
+
+
+                    minFaceDetectionConfidence:
+                        0.5,
+
+
+                    minFacePresenceConfidence:
+                        0.5,
+
+
+                    minTrackingConfidence:
+                        0.5,
+
+
+                    outputFaceBlendshapes:
+                        true,
+
+
+                    outputFacialTransformationMatrixes:
+                        true
+
+                }
+
+            );
+
+
+        status.textContent =
+            "نظام التتبع جاهز";
+
+    }
+
+
+    /*
+     * ==========================================
+     * تشغيل الكاميرا
+     * ==========================================
+     */
+
+    async function startCamera() {
+
+        try {
+
+            status.textContent =
+                "جاري تشغيل الكاميرا...";
+
+
+            /*
+             * تشغيل الكاميرا
+             */
+
+            const stream =
+                await navigator.mediaDevices.getUserMedia({
+
+                    video: {
+
+                        facingMode: "user",
+
+                        width: {
+                            ideal: 1280
+                        },
+
+                        height: {
+                            ideal: 720
+                        }
+
+                    },
+
+                    audio: false
+
+                });
+
+
+            video.srcObject =
+                stream;
+
+
+            await video.play();
+
+
+            cameraStarted =
+                true;
+
+
+            resizeCanvas();
+
+
+            /*
+             * تحميل Face Tracker
+             */
+
+            await createFaceTracker();
+
+
+            startButton.classList.add(
+                "hidden"
+            );
+
+
+            status.textContent =
+                "ابحث عن وجهك...";
+
+
+            /*
+             * بدء التتبع
+             */
+
+            requestAnimationFrame(
+                detectFace
+            );
+
+
+        } catch (error) {
+
+            console.error(error);
+
+
+            status.textContent =
+                "حدث خطأ: " + error.name;
+
+        }
+
+    }
+
+
+    /*
+     * ==========================================
+     * ضبط Canvas
+     * ==========================================
+     */
+
+    function resizeCanvas() {
+
+        if (
+            video.videoWidth === 0 ||
+            video.videoHeight === 0
+        ) {
+
+            return;
+
         }
 
 
-        const stream =
-            await navigator.mediaDevices.getUserMedia({
+        canvas.width =
+            video.videoWidth;
 
-                video: {
-                    facingMode: "user"
-                },
+        canvas.height =
+            video.videoHeight;
 
-                audio: false
-
-            });
+    }
 
 
-        video.srcObject = stream;
+    window.addEventListener(
+        "resize",
+        resizeCanvas
+    );
 
 
-        await video.play();
+    /*
+     * ==========================================
+     * رسم نقاط الوجه
+     * ==========================================
+     */
+
+    function drawFace(landmarks) {
+
+        ctx.clearRect(
+
+            0,
+            0,
+            canvas.width,
+            canvas.height
+
+        );
 
 
-        status.textContent =
-            "✓ الكاميرا تعمل بنجاح";
+        /*
+         * نرسم بعض النقاط المهمة
+         * بدل رسم جميع النقاط.
+         */
+
+        const importantPoints = [
+
+            1,    // الأنف
+
+            10,   // أعلى الوجه
+
+            152,  // الذقن
+
+            33,   // العين
+
+            133,
+
+            263,
+
+            362,
+
+            61,   // الفم
+
+            291,
+
+            199
+
+        ];
 
 
-        button.style.display = "none";
+        for (
+            const index of importantPoints
+        ) {
+
+            const point =
+                landmarks[index];
 
 
-    } catch (error) {
-
-        console.error(error);
-
-
-        status.textContent =
-            "خطأ: " + error.name;
+            if (!point) {
+                continue;
+            }
 
 
-        button.textContent =
-            "حاول مرة أخرى";
+            const x =
+                point.x * canvas.width;
+
+            const y =
+                point.y * canvas.height;
 
 
-        console.log(
-            "Camera error:",
-            error
+            ctx.beginPath();
+
+
+            ctx.arc(
+
+                x,
+                y,
+
+                5,
+
+                0,
+                Math.PI * 2
+
+            );
+
+
+            ctx.fillStyle =
+                "#00ff88";
+
+
+            ctx.fill();
+
+        }
+
+
+        /*
+         * نقطة الأنف أكبر
+         */
+
+        const nose =
+            landmarks[1];
+
+
+        if (nose) {
+
+            ctx.beginPath();
+
+            ctx.arc(
+
+                nose.x * canvas.width,
+
+                nose.y * canvas.height,
+
+                8,
+
+                0,
+                Math.PI * 2
+
+            );
+
+            ctx.fillStyle =
+                "#ffffff";
+
+            ctx.fill();
+
+        }
+
+    }
+
+
+    /*
+     * ==========================================
+     * حساب حركة الرأس
+     * ==========================================
+     */
+
+    function calculateHeadDirection(
+        landmarks
+    ) {
+
+        const nose =
+            landmarks[1];
+
+
+        const leftEye =
+            landmarks[33];
+
+
+        const rightEye =
+            landmarks[263];
+
+
+        const forehead =
+            landmarks[10];
+
+
+        const chin =
+            landmarks[152];
+
+
+        if (
+            !nose ||
+            !leftEye ||
+            !rightEye ||
+            !forehead ||
+            !chin
+        ) {
+
+            return {
+                x: 0,
+                y: 0,
+                z: 0
+            };
+
+        }
+
+
+        /*
+         * --------------------------------------
+         * X
+         * يمين / يسار
+         * --------------------------------------
+         */
+
+        const eyeCenterX =
+            (
+                leftEye.x +
+                rightEye.x
+            ) / 2;
+
+
+        let x =
+            (
+                nose.x -
+                eyeCenterX
+            ) * 180;
+
+
+        /*
+         * --------------------------------------
+         * Y
+         * أعلى / أسفل
+         * --------------------------------------
+         */
+
+        const eyeCenterY =
+            (
+                leftEye.y +
+                rightEye.y
+            ) / 2;
+
+
+        const faceHeight =
+            chin.y -
+            forehead.y;
+
+
+        let y = 0;
+
+
+        if (faceHeight !== 0) {
+
+            y =
+                (
+                    (nose.y -
+                    eyeCenterY) /
+                    faceHeight
+                ) * 180;
+
+        }
+
+
+        /*
+         * --------------------------------------
+         * Z
+         * إمالة الرأس
+         * --------------------------------------
+         */
+
+        const dx =
+            rightEye.x -
+            leftEye.x;
+
+
+        const dy =
+            rightEye.y -
+            leftEye.y;
+
+
+        let z =
+            Math.atan2(
+                dy,
+                dx
+            ) *
+            180 /
+            Math.PI;
+
+
+        /*
+         * لأن الصورة معكوسة
+         */
+
+        x *= -1;
+
+
+        /*
+         * تحديد الحدود
+         */
+
+        x =
+            Math.max(
+                -90,
+                Math.min(90, x)
+            );
+
+
+        y =
+            Math.max(
+                -90,
+                Math.min(90, y)
+            );
+
+
+        z =
+            Math.max(
+                -90,
+                Math.min(90, z)
+            );
+
+
+        return {
+            x,
+            y,
+            z
+        };
+
+    }
+
+
+    /*
+     * ==========================================
+     * Face Detection
+     * ==========================================
+     */
+
+    function detectFace() {
+
+        if (
+            !cameraStarted ||
+            !faceLandmarker ||
+            video.readyState < 2
+        ) {
+
+            requestAnimationFrame(
+                detectFace
+            );
+
+            return;
+
+        }
+
+
+        /*
+         * ننتظر إطار فيديو جديد
+         */
+
+        if (
+            video.currentTime !==
+            lastVideoTime
+        ) {
+
+            lastVideoTime =
+                video.currentTime;
+
+
+            const results =
+                faceLandmarker.detectForVideo(
+
+                    video,
+
+                    performance.now()
+
+                );
+
+
+            /*
+             * تنظيف Canvas
+             */
+
+            ctx.clearRect(
+
+                0,
+                0,
+                canvas.width,
+                canvas.height
+
+            );
+
+
+            /*
+             * هل وجدنا وجهًا؟
+             */
+
+            if (
+                results.faceLandmarks &&
+                results.faceLandmarks.length > 0
+            ) {
+
+                const landmarks =
+                    results.faceLandmarks[0];
+
+
+                /*
+                 * رسم النقاط
+                 */
+
+                drawFace(
+                    landmarks
+                );
+
+
+                /*
+                 * حساب اتجاه الرأس
+                 */
+
+                const direction =
+                    calculateHeadDirection(
+                        landmarks
+                    );
+
+
+                /*
+                 * عرض القيم
+                 */
+
+                xValue.textContent =
+                    Math.round(
+                        direction.x
+                    ) + "°";
+
+
+                yValue.textContent =
+                    Math.round(
+                        direction.y
+                    ) + "°";
+
+
+                zValue.textContent =
+                    Math.round(
+                        direction.z
+                    ) + "°";
+
+
+                status.textContent =
+                    "✓ تم اكتشاف الوجه";
+
+
+            } else {
+
+                status.textContent =
+                    "لم يتم العثور على وجه";
+
+            }
+
+        }
+
+
+        requestAnimationFrame(
+            detectFace
         );
 
     }
 
-});
+
+    /*
+     * ==========================================
+     * زر تشغيل الكاميرا
+     * ==========================================
+     */
+
+    startButton.addEventListener(
+        "click",
+        startCamera
+    );
 
 </script>
 
 </body>
-</html> 
+    </html> 
